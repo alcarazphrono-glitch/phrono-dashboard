@@ -8,41 +8,68 @@ def set_custom_theme():
     st.markdown(
         """
         <style>
+        /* ==== BASE APP BACKGROUND ==== */
         body, .stApp {
-            background-color: #0A2239;
-            color: #F5F6FA;
+            background-color: #FFFFFF !important;  /* Fondo blanco */
+            color: #0A2239 !important;  /* Texto en azul petróleo */
+            font-family: 'Inter', sans-serif;
         }
-        .st-bb, .st-cq, .st-cq *, .stMarkdown, .stText {
-            color: #F5F6FA !important;
-        }
+
+        /* ==== SIDEBAR ==== */
         .stSidebar, .css-1d391kg {
-            background-color: #0A2239 !important;
-            color: #F5F6FA !important;
+            background-color: #F7F9FB !important;  /* Gris muy claro */
+            color: #0A2239 !important;
         }
-        .stHeader {
-            background-color: #0A2239 !important;
+
+        /* ==== HEADERS & TITLES ==== */
+        h1, h2, h3, h4, h5, h6, .stMarkdown, .stText {
+            color: #0A2239 !important;
         }
-        .css-1y4p8pa, .css-1v3fvcr, .css-10trblm {
-            color: #F5F6FA !important;
+
+        .highlight {
+            color: #D4A017 !important; /* Dorado de acento */
+            font-weight: 600;
         }
+
+        /* ==== BUTTONS ==== */
         .stButton > button {
             background-color: #D4A017 !important;
-            color: #0A2239 !important;
+            color: white !important;
             border: none;
+            border-radius: 6px;
+            padding: 0.6rem 1rem;
+            font-weight: 600;
         }
+        .stButton > button:hover {
+            background-color: #b88a12 !important;
+            color: white !important;
+        }
+
+        /* ==== DATAFRAMES ==== */
         .stDataFrame th, .stDataFrame td {
-            background-color: #11294d !important;
-            color: #F5F6FA !important;
+            background-color: #FFFFFF !important;
+            color: #0A2239 !important;
         }
-        .css-1offfwp, .css-1fcdlhk, .css-1hynsf2 {
-            color: #D4A017 !important;
+
+        /* ==== MULTISELECT, INPUTS, SELECTBOX ==== */
+        .st-cq, .st-bb, .stTextInput, .css-1n76uvr, .css-1pahdxg {
+            background-color: white !important;
+            color: #0A2239 !important;
+            border-radius: 6px !important;
+            border: 1px solid #dcdcdc !important;
         }
-        .highlight {
-            color: #D4A017 !important;
+
+        /* ==== SEPARATORS ==== */
+        hr {
+            border: none;
+            height: 1px;
+            background-color: #e0e0e0;
         }
         </style>
-        """, unsafe_allow_html=True
+        """,
+        unsafe_allow_html=True
     )
+
 
 # --- Placeholder Data ---
 def get_placeholder_portfolio_data():
@@ -74,21 +101,22 @@ def fetch_benchmark_data(benchmarks):
 
 # --- Chart Styling Helper ---
 def themed_chart(df, title):
-    import plotly.graph_objs as go
+    import plotly.graph_objects as go
     fig = go.Figure()
     for col in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col))
     fig.update_layout(
         title=title,
-        plot_bgcolor='#0A2239',
-        paper_bgcolor='#0A2239',
-        font=dict(color='#F5F6FA'),
-        legend=dict(font=dict(color='#F5F6FA')),
-        xaxis=dict(color='#F5F6FA', gridcolor='#25375a'),
-        yaxis=dict(color='#F5F6FA', gridcolor='#25375a'),
-        title_font=dict(color='#D4A017')
+        plot_bgcolor='#FFFFFF',     # Fondo blanco del gráfico
+        paper_bgcolor='#FFFFFF',    # Fondo del contenedor
+        font=dict(color='#0A2239'),
+        legend=dict(font=dict(color='#0A2239')),
+        xaxis=dict(color='#0A2239', gridcolor='#E5E5E5'),
+        yaxis=dict(color='#0A2239', gridcolor='#E5E5E5'),
+        title_font=dict(color='#D4A017', size=20)
     )
     return fig
+
 
 # --- MAIN APP ---
 def main():
@@ -99,14 +127,15 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    st.markdown(
-        "<h1 style='color:#D4A017;font-weight:700;margin-bottom:0;'>Phrono</h1>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        "<h3 style='color:#F5F6FA;font-weight:400;margin-top:0;'>Intelligence-driven capital for <span class='highlight'>mispriced assets</span>.</h3>",
-        unsafe_allow_html=True
-    )
+st.markdown(
+    "<h1 style='color:#0A2239;font-weight:700;margin-bottom:0;'>Phrono</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<h3 style='color:#0A2239;font-weight:400;margin-top:4px;'>Intelligence-driven capital for <span class='highlight'>mispriced assets</span>.</h3>",
+    unsafe_allow_html=True
+)
+
 
     st.sidebar.title("Phrono Navigation")
     section = st.sidebar.radio("Go to", ("Portfolio Monitor", "Benchmark Tracker"))
