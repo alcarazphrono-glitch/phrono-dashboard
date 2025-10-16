@@ -1,6 +1,5 @@
 # app.py
 # Phrono Lab - UI v3 (clean, professional, navbar visual)
-# Replace existing app.py with this file.
 # Note: edit the TICKERS_TO_MONITOR and BENCHMARKS_TO_MONITOR in the CONFIG block below.
 
 import streamlit as st
@@ -9,6 +8,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import plotly.graph_objects as go
+
+def main():
+    inject_styles()      # <<-- debe ejecutarse primero
+    render_navbar()
+    ...
+
 
 # -----------------------------
 # CONFIG / THEME
@@ -24,10 +29,11 @@ st.set_page_config(page_title="Phrono Lab", page_icon="🧭", layout="wide")
 # -----------------------------
 # CSS / STYLING (visual navbar fixed up top)
 # -----------------------------
+# al inicio del archivo (si no está ya)
+import streamlit.components.v1 as components
+
 def inject_styles():
-    st.markdown(
-        f"""
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    css = f"""
     <style>
     :root {{ --blue: {BLUE}; --gold: {GOLD}; --light-bg: {LIGHT_BG}; --sidebar-bg: {SIDEBAR_BG}; --grid: {GRID}; }}
 
@@ -47,9 +53,7 @@ def inject_styles():
         border-bottom: 1px solid #E6E9EE;
         box-shadow: 0 6px 18px rgba(10,34,57,0.03);
     }}
-    .ph-brand {{
-        display:flex; align-items:center; gap:12px;
-    }}
+    .ph-brand {{ display:flex; align-items:center; gap:12px; }}
     .ph-logo {{
         width:44px; height:44px; border-radius:8px;
         background: linear-gradient(135deg, var(--blue), #073043);
@@ -87,13 +91,11 @@ def inject_styles():
     .ph-footer {{ text-align:right; color:#6B7280; font-size:13px; margin-top:18px; }}
 
     /* Responsive tweaks */
-    @media (max-width: 800px) {{
-        .ph-links {{ display:none; }}
-    }}
+    @media (max-width: 800px) {{ .ph-links {{ display:none; }} }}
     </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    """
+    # inject the CSS using components.html (safer than st.markdown for big style blocks)
+    components.html(css, height=0, scrolling=False)
 
 
 # -----------------------------
