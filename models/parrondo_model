@@ -1,1 +1,340 @@
+"""
+models/parrondo_model.py
+
+Parrondo-like alternation engine (v1.0)
+
+Funciones principales:
+- compute_asynchrony(...)           -> señales de desalineación / asincronía
+- alternating_weights(...)          -> convierte señales en pesos dinámicos
+- simulate_parrondo_portfolio(...)  -> simula PnL del portafolio con dichos pesos
+- optimize_parrondo_params(...)     -> búsqueda simple (grid) para alpha/window
+- demo_toy_run(...)                 -> demo rápido para testear localmente
+
+Dependencias:
+- numpy, pandas
+
+Diseñado para integrarse desde Streamlit:
+from models.parrondo_model import compute_asynchrony, alternating_weights, simulate_parrondo_portfolio, optimize_parrondo_params
+"""
+
+import numpy as np
+import pandas as pd
+from itertools import product
+from typing import Tuple, Dict, Optional
+
+
+# -------------------------
+# Utilidades
+# -------------------------
+def annualized_sharpe(logret_series: pd.Series, trading_days: int = 252, rf: float = 0.0) -> float:
+    """Annualized Sharpe ratio from a series of log returns."""
+    s = logret_series.dropna()
+    if s.empty or np.isclose(s.std(), 0.0):
+        return np.nan
+    mu = s.mean() * trading_days
+    sigma = s.std() * np.sqrt(trading_days)
+    return (mu - rf) / sigma
+
+
+# -------------------------
+# 1) Señales: compute_asynchrony
+# -------------------------
+def compute_asynchrony(
+    df_prices: pd.DataFrame,
+    window: int = 20,
+    method: str = "corr_var",
+    returns_method: str = "log",
+) -> pd.DataFrame:
+    """
+    Compute asynchrony signals S_i(t) for each asset.
+
+    Parameters
+    ----------
+    df_prices : DataFrame
+        Price series (dates index, asset columns).
+    window : int
+        Rolling window size (in observations).
+    method : {'corr_var', 'corr_diff', 'zscore'}
+        corr_var: variance of rolling correlations (per-asset).
+        corr_diff: 1 - mean rolling correlation (per-asset).
+        zscore: abs rolling z-score of returns (per-asset).
+    returns_method : {'log','simple'}
+        Type of returns to compute.
+
+    Returns
+    -------
+    signals : DataFrame
+        Indexed by dates (aligned to end of roll), columns=assets.
+        Higher values mean more "asynchronous" relative to peers.
+    """
+    if df_prices.empty:
+        return pd.DataFrame()
+
+    # compute returns
+    if returns_method == "log":
+        r = np.log(df_prices / df_prices.shift(1)).dropna()
+    else:
+        r = df_prices.pct_change().dropna()
+
+    if r.empty:
+        return pd.DataFrame()
+
+    cols = r.columns.tolist()
+
+    if method == "corr_var":
+        records = []
+        idx = []
+        for i in range(window - 1, len(r)):
+            block = r.iloc[i - window + 1 : i + 1]
+            corr = block.corr()
+            out = {}
+            for col in cols:
+                others = corr[col].drop(labels=col)
+                out[col] = others.var() if len(others) > 0 else 0.0
+            records.append(out)
+            idx.append(r.index[i])
+        signals = pd.DataFrame(records, index=idx)
+        # standardize across assets each timestamp (z-score)
+        signals = signals.apply(lambda row: (row - row.mean()) / (row.std() if row.std() > 0 else 1), axis=1)
+        return signals.fillna(0.0)
+
+    elif method == "corr_diff":
+        records = []
+        idx = []
+        for i in range(window - 1, len(r)):
+            block = r.iloc[i - window + 1 : i + 1]
+            corr = block.corr()
+            out = {}
+            for col in cols:
+                others = corr[col].drop(labels=col)
+                out[col] = 1.0 - others.mean() if len(others) > 0 else 0.0
+            records.append(out)
+            idx.append(r.index[i])
+        signals = pd.DataFrame(records, index=idx)
+        signals = signals.apply(lambda row: (row - row.mean()) / (row.std() if row.std() > 0 else 1), axis=1)
+        return signals.fillna(0.0)
+
+    elif method == "zscore":
+        # rolling zscore (current return vs rolling mean/std)
+        z = r.rolling(window=window).apply(lambda x: (x[-1] - x.mean()) / (x.std() if x.std() > 0 else 1), raw=False)
+        signals = z.abs().dropna()
+        return signals.fillna(0.0)
+
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+
+# -------------------------
+# 2) Alternation engine -> alternating_weights
+# -------------------------
+def alternating_weights(
+    signals: pd.DataFrame,
+    alpha: float = 0.1,
+    init_weights: Optional[pd.Series] = None,
+    method: str = "additive",
+    normalize: bool = True,
+    clip: Tuple[float, float] = (0.0, 1.0),
+    smoothing_tau: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Convert signals into time series of weights.
+
+    Methods:
+    - 'additive': w_{t+1} = w_t + alpha * (S_i(t) - mean(S(t)))
+    - 'softmax' : w(t) = softmax(beta * centered_signal)
+    - 'probabilistic': w_{t+1} = (1-alpha)*w_t + alpha*softmax(beta*centered_signal)
+
+    Returns DataFrame indexed like signals.
+    """
+    if signals.empty:
+        return pd.DataFrame()
+
+    assets = signals.columns.tolist()
+    dates = signals.index
+    n = len(assets)
+
+    # initial weights
+    if init_weights is None:
+        w_prev = np.array([1.0 / n] * n)
+    else:
+        if isinstance(init_weights, pd.Series):
+            w_prev = init_weights.reindex(assets).fillna(0).values
+        else:
+            w_prev = np.array(init_weights, dtype=float)
+
+    W = np.zeros((len(dates), n))
+
+    for t_idx, date in enumerate(dates):
+        s = signals.iloc[t_idx].values.astype(float)
+        s_center = s - np.nanmean(s)
+
+        if method == "additive":
+            w_new = w_prev + alpha * s_center
+        elif method == "softmax":
+            beta = max(1e-6, alpha * 10.0)
+            ex = np.exp(beta * (s_center - np.max(beta * s_center)))
+            probs = ex / (np.sum(ex) + 1e-12)
+            w_new = probs
+        elif method == "probabilistic":
+            beta = max(1e-6, alpha * 10.0)
+            ex = np.exp(beta * (s_center - np.max(beta * s_center)))
+            probs = ex / (np.sum(ex) + 1e-12)
+            w_new = (1 - alpha) * w_prev + alpha * probs
+        else:
+            raise ValueError("Unknown method")
+
+        # smoothing
+        if smoothing_tau is not None:
+            tau = smoothing_tau
+            w_new = tau * w_new + (1 - tau) * w_prev
+
+        # clip and normalize
+        w_new = np.clip(w_new, clip[0], clip[1])
+        if normalize:
+            ssum = np.sum(w_new)
+            if ssum == 0:
+                w_new = np.array([1.0 / n] * n)
+            else:
+                w_new = w_new / ssum
+
+        W[t_idx, :] = w_new
+        w_prev = w_new
+
+    weights_ts = pd.DataFrame(W, index=dates, columns=assets)
+    return weights_ts
+
+
+# -------------------------
+# 3) Simulador / backtester
+# -------------------------
+def simulate_parrondo_portfolio(
+    df_prices: pd.DataFrame,
+    weights_ts: pd.DataFrame,
+    transaction_cost: float = 0.0,
+) -> Dict[str, pd.Series]:
+    """
+    Combine asset returns and weights into portfolio returns.
+
+    Returns:
+      - weights (aligned)
+      - asset_log_returns
+      - portfolio_log_returns
+      - cumulative_return (simple)
+    """
+    if df_prices.empty or weights_ts.empty:
+        return {}
+
+    lr = np.log(df_prices / df_prices.shift(1)).dropna()
+    common_idx = lr.index.intersection(weights_ts.index)
+    if len(common_idx) == 0:
+        return {}
+
+    lr = lr.reindex(common_idx).fillna(0.0)
+    w = weights_ts.reindex(common_idx).fillna(method="ffill").fillna(0.0)
+
+    # portfolio log return per time
+    port_lr_vals = (w.values * lr.values).sum(axis=1)
+    port_lr = pd.Series(port_lr_vals, index=common_idx, name="portfolio_logret")
+
+    # transaction costs approximation: cost on absolute turnover * transaction_cost
+    if transaction_cost and len(common_idx) > 1:
+        turnovers = np.abs(w.values[1:, :] - w.values[:-1, :]).sum(axis=1)
+        # assign turnover to days 1..n-1
+        tc_series = np.concatenate([[0.0], turnovers]) * transaction_cost
+        port_lr = port_lr - tc_series
+
+    cum = np.exp(port_lr.cumsum()) - 1.0
+
+    return {
+        "weights": w,
+        "asset_log_returns": lr,
+        "portfolio_log_returns": port_lr,
+        "cumulative_return": cum,
+    }
+
+
+# -------------------------
+# 4) Optimización simple (grid search)
+# -------------------------
+def optimize_parrondo_params(
+    df_prices: pd.DataFrame,
+    alphas: list = None,
+    windows: list = None,
+    method: str = "corr_var",
+    weight_method: str = "additive",
+    metric: str = "sharpe",
+    max_combos: int = 50,
+) -> Dict:
+    """
+    Grid-search to find (alpha, window) maximizing metric (sharpe by default).
+    Returns dict with 'best' and 'all' results.
+    """
+    if df_prices.empty:
+        return {"best": {}, "all": pd.DataFrame()}
+
+    if alphas is None:
+        alphas = list(np.linspace(0.02, 0.4, 8))
+    if windows is None:
+        windows = [10, 20, 40, 60]
+
+    combos = list(product(alphas, windows))[:max_combos]
+    rows = []
+    for alpha, window in combos:
+        signals = compute_asynchrony(df_prices, window=window, method=method)
+        if signals.empty:
+            rows.append({"alpha": alpha, "window": window, "metric": np.nan})
+            continue
+        weights_ts = alternating_weights(signals, alpha=alpha, method=weight_method, normalize=True)
+        sim = simulate_parrondo_portfolio(df_prices, weights_ts)
+        if not sim:
+            rows.append({"alpha": alpha, "window": window, "metric": np.nan})
+            continue
+        port_lr = sim["portfolio_log_returns"]
+        if metric == "sharpe":
+            val = annualized_sharpe(port_lr)
+        elif metric == "return":
+            val = float(sim["cumulative_return"].iloc[-1])
+        else:
+            val = annualized_sharpe(port_lr)
+        rows.append({"alpha": alpha, "window": window, "metric": val})
+
+    df_results = pd.DataFrame(rows)
+    if df_results["metric"].notna().any():
+        idx_best = df_results["metric"].idxmax()
+        best_row = df_results.loc[idx_best].to_dict()
+    else:
+        best_row = {}
+    return {"best": best_row, "all": df_results}
+
+
+# -------------------------
+# Demo / ejemplo rápido
+# -------------------------
+def demo_toy_run(n_assets: int = 4, n_days: int = 400, seed: int = 42):
+    """
+    Generate toy price series and run a quick parrondo demo.
+    Returns dict with 'prices','signals','weights','sim'.
+    """
+    np.random.seed(seed)
+    dates = pd.bdate_range(end=pd.Timestamp.today(), periods=n_days)
+    S = {}
+    for i in range(n_assets):
+        mu = np.random.uniform(-0.0004, 0.0009)
+        sigma = np.random.uniform(0.007, 0.02)
+        price = 100 + np.cumsum(np.random.normal(loc=mu, scale=sigma, size=len(dates)))
+        S[f"A{i+1}"] = price
+    df_prices = pd.DataFrame(S, index=dates)
+
+    signals = compute_asynchrony(df_prices, window=20, method="corr_var")
+    weights = alternating_weights(signals, alpha=0.08, method="additive")
+    sim = simulate_parrondo_portfolio(df_prices, weights)
+    return {"prices": df_prices, "signals": signals, "weights": weights, "sim": sim}
+
+
+# quick test if run standalone
+if __name__ == "__main__":
+    demo = demo_toy_run()
+    print("Demo shapes:", demo["prices"].shape, demo["signals"].shape, demo["weights"].shape)
+    if demo["sim"]:
+        print("Cumulative return (last):", demo["sim"]["cumulative_return"].iloc[-1])
 
