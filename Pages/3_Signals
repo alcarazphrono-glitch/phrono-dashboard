@@ -1,1 +1,156 @@
+# ===============================================================
+# 3_Signals.py — Phrono Lab
+# Parrondo Alternation Engine Interface (v1.0)
+# ===============================================================
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import yfinance as yf
+from datetime import datetime
+
+from models.parrondo_model import (
+    compute_asynchrony,
+    alternating_weights,
+    simulate_parrondo_portfolio,
+    optimize_parrondo_params,
+)
+
+# ===============================================================
+# CONFIGURACIÓN INICIAL
+# ===============================================================
+
+st.set_page_config(page_title="Phrono Lab — Alternation Engine", layout="wide", page_icon="🧠")
+
+st.markdown("""
+<style>
+.section-title {
+    font-size: 19px;
+    color: #0A2239;
+    font-weight: 800;
+    margin: 20px 0 10px 0;
+}
+.metric-card {
+    background: #FFFFFF;
+    border-radius: 12px;
+    padding: 16px 18px;
+    border: 1px solid #E9EEF4;
+    box-shadow: 0 6px 18px rgba(10,34,57,0.06);
+    margin-bottom: 12px;
+}
+.metric-title {
+    font-size: 13px;
+    color: #0A2239;
+    margin-bottom: 6px;
+    font-weight: 700;
+}
+.metric-value {
+    font-size: 22px;
+    color: #D4A017;
+    font-weight: 800;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ===============================================================
+# DATOS BASE
+# ===============================================================
+
+ASSETS = ["CL=F", "GC=F", "SI=F", "HG=F", "NG=F", "ZC=F", "ZS=F", "KC=F"]
+
+@st.cache_data(ttl=3600)
+def fetch_prices(tickers, period="3y", interval="1d"):
+    if not tickers:
+        return pd.DataFrame()
+    data = yf.download(tickers, period=period, interval=interval, progress=False, threads=True)
+    if isinstance(data.columns, pd.MultiIndex):
+        df = data["Adj Close"]
+    else:
+        df = data[["Adj Close"]]
+    df.columns = [str(c) for c in df.columns]
+    df = df.dropna(how="all")
+    return df
+
+
+# ===============================================================
+# LAYOUT
+# ===============================================================
+
+st.markdown("<div class='section-title'>🧠 Parrondo Alternation Engine</div>", unsafe_allow_html=True)
+st.markdown("Modela asincronías y alternancias dinámicas entre activos para generar **alpha estructural**.")
+
+colA, colB = st.columns([2, 1])
+
+with colB:
+    st.markdown("### ⚙️ Configuración del modelo")
+    assets = st.multiselect("Select assets", options=ASSETS, default=["CL=F", "GC=F", "HG=F"])
+    period = st.selectbox("Period", ["1y", "2y", "3y", "5y"], index=2)
+    method = st.selectbox("Asynchrony metric", ["corr_var", "corr_diff", "zscore"], index=0)
+    weight_method = st.selectbox("Alternation type", ["additive", "softmax", "probabilistic"], index=0)
+    alpha = st.slider("Learning rate (α)", 0.01, 0.5, 0.1, 0.01)
+    window = st.slider("Window length", 5, 60, 20, 5)
+    transaction_cost = st.number_input("Transaction cost", min_value=0.0, max_value=0.01, value=0.0005, step=0.0001)
+    run_btn = st.button("🚀 Run Alternation Model")
+    optimize_btn = st.button("🔍 Optimize Parameters")
+
+with colA:
+    st.markdown("### 📈 Data Preview")
+    if assets:
+        prices = fetch_prices(assets, period=period)
+        st.line_chart(prices)
+    else:
+        st.warning("Select assets to begin.")
+
+
+# ===============================================================
+# PROCESAMIENTO PRINCIPAL
+# ===============================================================
+
+if run_btn:
+    if len(assets) < 2:
+        st.warning("Please select at least 2 assets.")
+    else:
+        prices = fetch_prices(assets, period=period)
+        st.markdown("<div class='section-title'>📊 Asynchrony Signals</div>", unsafe_allow_html=True)
+        signals = compute_asynchrony(prices, window=window, method=method)
+        st.line_chart(signals)
+
+        st.markdown("<div class='section-title'>⚖️ Alternating Weights</div>", unsafe_allow_html=True)
+        weights = alternating_weights(signals, alpha=alpha, method=weight_method)
+        st.line_chart(weights)
+
+        st.markdown("<div class='section-title'>💹 Portfolio Simulation</div>", unsafe_allow_html=True)
+        sim = simulate_parrondo_portfolio(prices, weights, transaction_cost=transaction_cost)
+        if sim:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=sim["cumulative_return"].index,
+                                     y=sim["cumulative_return"].values,
+                                     mode="lines",
+                                     line=dict(color="#D4A017", width=3),
+                                     name="Portfolio (Cumulative Return)"))
+            fig.update_layout(title="Portfolio Evolution", xaxis_title="Date", yaxis_title="Return", template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
+
+            sharpe = np.round(sim["portfolio_log_returns"].mean() / sim["portfolio_log_returns"].std() * np.sqrt(252), 3)
+            total_return = np.round(sim["cumulative_return"].iloc[-1] * 100, 2)
+            st.markdown("### 📊 Performance Summary")
+            c1, c2 = st.columns(2)
+            c1.markdown(f"<div class='metric-card'><div class='metric-title'>Sharpe (est.)</div><div class='metric-value'>{sharpe}</div></div>", unsafe_allow_html=True)
+            c2.markdown(f"<div class='metric-card'><div class='metric-title'>Cumulative Return (%)</div><div class='metric-value'>{total_return}</div></div>", unsafe_allow_html=True)
+
+if optimize_btn:
+    st.markdown("<div class='section-title'>🧩 Parameter Optimization</div>", unsafe_allow_html=True)
+    prices = fetch_prices(assets, period=period)
+    result = optimize_parrondo_params(prices, method=method, weight_method=weight_method)
+    df_results = result["all"]
+    st.dataframe(df_results.sort_values("metric", ascending=False), use_container_width=True)
+    if "best" in result and result["best"]:
+        st.success(f"Best combination: α={result['best']['alpha']}, window={int(result['best']['window'])}, metric={result['best']['metric']:.3f}")
+
+# ===============================================================
+# FOOTER
+# ===============================================================
+
+st.markdown(f"<br><center><small>Phrono © {datetime.now().year} — Parrondo Engine Prototype v1.0</small></center>", unsafe_allow_html=True)
 
